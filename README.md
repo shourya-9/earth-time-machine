@@ -1,4 +1,4 @@
-# 🛰️ Satellite Change Detection
+# 🌎 Earth Time Machine
 
 Detect land-cover change anywhere on Earth between two years, using 10 m
 Sentinel-derived land cover maps. Built as a reproducible pipeline plus a live
