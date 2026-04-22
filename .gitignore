@@ -23,3 +23,14 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Streamlit: ignore real secrets but keep the example template trackable.
+.streamlit/secrets.toml
+
+# Secrets / credentials — NEVER commit these
+*service-account*.json
+*service-key*.json
+*-key.json
+ee-*.json
+credentials.json
+gcp-*.json

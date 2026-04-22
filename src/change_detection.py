@@ -12,7 +12,7 @@ class codes, compute:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -68,8 +68,11 @@ class ChangeResult:
     after: xr.DataArray
     change_mask: xr.DataArray          # boolean: True where class changed
     transition_code: xr.DataArray      # int: (before * 100 + after) where changed
-    before_year: int
-    after_year: int
+    # A human-readable label for the "before" and "after" periods. For the
+    # IO-LULC data source these are simple year ints (e.g. 2018, 2023).
+    # For Dynamic World they are period strings (e.g. "Apr 2024", "2026-04-01 → 2026-04-30").
+    before_year: Union[int, str]
+    after_year: Union[int, str]
     pixel_area_ha: float               # hectares per pixel (approx)
     before_area_ha: Dict[int, float]
     after_area_ha: Dict[int, float]
@@ -154,8 +157,8 @@ def transition_matrix(before: xr.DataArray, after: xr.DataArray) -> pd.DataFrame
 def compute_change(
     before: xr.DataArray,
     after: xr.DataArray,
-    before_year: int,
-    after_year: int,
+    before_year: Union[int, str],
+    after_year: Union[int, str],
 ) -> ChangeResult:
     """
     Compute all change statistics between two land-cover rasters.

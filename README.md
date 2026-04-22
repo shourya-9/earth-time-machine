@@ -101,6 +101,43 @@ forest losses to specific fire events.
 
 ---
 
+## Optional: Dynamic World (near-real-time land cover)
+
+The app supports Google Dynamic World as a second data source, giving
+~weekly-resolution land cover from 2017 to today (vs. IO-LULC's yearly
+product with a ~12-month publish lag).
+
+Access requires a free Google Cloud project with the Earth Engine API
+enabled, and a Noncommercial / Community registration on Earth Engine.
+Set the project ID in the sidebar (or export `EARTHENGINE_PROJECT`).
+For headless / CI / deployed use, set `GOOGLE_APPLICATION_CREDENTIALS`
+to a GCP service-account JSON key (the service account needs the
+`Earth Engine Resource Viewer` and `Service Usage Consumer` IAM roles).
+
+---
+
+## Deploy to Streamlit Community Cloud (free)
+
+1. Push the repo to GitHub (the `.gitignore` already blocks service-account
+   JSONs and `.streamlit/secrets.toml` — double-check with
+   `git status` before committing).
+2. Go to https://share.streamlit.io → **New app** → select your repo,
+   branch, and `app.py`.
+3. Under **Advanced settings → Secrets**, paste the contents of
+   `.streamlit/secrets.toml.example` with real values filled in:
+   - `EARTHENGINE_PROJECT` — your GCP project ID
+   - `FIRMS_MAP_KEY` — NASA FIRMS API key (optional; only needed for fires)
+   - `[GCP_SERVICE_ACCOUNT_JSON]` — paste every field from your
+     service-account JSON file. Keep the literal `\n` inside
+     `private_key` as-is.
+4. Click Deploy. First build takes 2–4 minutes.
+
+On boot, `app.py` loads those secrets and writes the service-account JSON
+to a tempfile, so the rest of the code behaves identically to running
+locally with `export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`.
+
+---
+
 ## Project structure
 
 ```

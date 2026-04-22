@@ -23,3 +23,8 @@ plotly>=5.18.0
 # Misc
 requests>=2.31.0
 python-dateutil>=2.8.2
+
+# Optional: Google Dynamic World (near-real-time land cover) via Earth Engine.
+# Remove this line if you only plan to use IO-LULC.
+# Requires a one-time `earthengine authenticate` before use.
+earthengine-api>=0.1.400

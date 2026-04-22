@@ -15,8 +15,9 @@ Features:
 from __future__ import annotations
 
 import os
+import re
 import traceback
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 
 import folium
@@ -48,6 +49,11 @@ from src.overlays import (
     firms_period_description,
     check_firms_key_status,
 )
+from src.dynamic_world import (
+    fetch_dynamic_world_mode,
+    dynamic_world_period_description,
+    check_earth_engine_auth,
+)
 
 
 st.set_page_config(
@@ -55,6 +61,50 @@ st.set_page_config(
     page_icon="🛰️",
     layout="wide",
 )
+
+
+# ---------------------------------------------------------------------------
+# Deployment bootstrap: load secrets from st.secrets → os.environ
+# ---------------------------------------------------------------------------
+# On Streamlit Community Cloud there's no shell env, so anything we'd normally
+# `export` locally must come from st.secrets. We convert those values into
+# environment variables here so the rest of the code (which reads env vars)
+# doesn't need to know whether it's running locally or in the cloud.
+#
+# Locally, `.streamlit/secrets.toml` is optional — if it's missing, this block
+# is a no-op and your terminal `export` workflow continues to work.
+
+def _bootstrap_secrets() -> None:
+    import json as _json
+    import tempfile as _tempfile
+
+    def _safe_get(key):
+        """Return secrets[key] or None, swallowing 'no secrets file' errors."""
+        try:
+            return st.secrets.get(key) if hasattr(st.secrets, "get") else st.secrets[key]
+        except Exception:
+            return None
+
+    # Plain string secrets → env vars.
+    for key in ("EARTHENGINE_PROJECT", "FIRMS_MAP_KEY"):
+        val = _safe_get(key)
+        if val and not os.environ.get(key):
+            os.environ[key] = str(val)
+
+    # Service account JSON → materialize to a tempfile, point
+    # GOOGLE_APPLICATION_CREDENTIALS at it. Earth Engine's
+    # ServiceAccountCredentials constructor requires a file path.
+    sa = _safe_get("GCP_SERVICE_ACCOUNT_JSON")
+    if sa and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        # st.secrets returns a Mapping-like AttrDict; convert to plain dict.
+        sa_dict = dict(sa) if not isinstance(sa, dict) else sa
+        fd, path = _tempfile.mkstemp(prefix="ee-sa-", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            _json.dump(sa_dict, f)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+
+
+_bootstrap_secrets()
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +162,23 @@ PRESETS = {
 # ---------------------------------------------------------------------------
 
 def _init_state():
+    # Default DW windows: 30 days ending ~2 years ago, and 30 days ending today.
+    today = date.today()
+    dw_after_end_default = today
+    dw_after_start_default = today - timedelta(days=29)
+    dw_before_end_default = today - timedelta(days=365 * 2)
+    dw_before_start_default = dw_before_end_default - timedelta(days=29)
+
     defaults = {
         "bbox": None,
+        "data_source": "iolulc",    # "iolulc" or "dw"
         "before_year": 2018,
         "after_year": 2023,
+        "dw_before_start": dw_before_start_default,
+        "dw_before_end": dw_before_end_default,
+        "dw_after_start": dw_after_start_default,
+        "dw_after_end": dw_after_end_default,
+        "ee_project": os.environ.get("EARTHENGINE_PROJECT", ""),
         "result": None,
         "aoi_name": "custom AOI",
         "preview_before": None,
@@ -157,36 +220,149 @@ if preset_choice != "(choose...)":
         st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Years")
-years = available_years()
+st.sidebar.markdown("### Data source")
 
-# Clamp stored preferences in case they fall outside the current range
-# (can happen after extending the range across versions).
-if st.session_state.before_year not in years:
-    st.session_state.before_year = years[0]
-if st.session_state.after_year not in years:
-    st.session_state.after_year = years[-1]
-
-before_year = st.sidebar.selectbox(
-    "Before year",
-    years,
-    index=years.index(st.session_state.before_year),
+DATA_SOURCE_OPTIONS = {
+    "iolulc": "IO-LULC (annual, 2017-2024)",
+    "dw": "Google Dynamic World (near-real-time, any 2015-today window)",
+}
+_data_source_keys = list(DATA_SOURCE_OPTIONS.keys())
+_current_ds_idx = _data_source_keys.index(
+    st.session_state.data_source
+    if st.session_state.data_source in _data_source_keys
+    else "iolulc"
 )
-after_year = st.sidebar.selectbox(
-    "After year",
-    years,
-    index=years.index(st.session_state.after_year),
+data_source = st.sidebar.radio(
+    "Choose a land-cover product",
+    _data_source_keys,
+    format_func=lambda k: DATA_SOURCE_OPTIONS[k],
+    index=_current_ds_idx,
+    help=(
+        "IO-LULC: Impact Observatory annual 10m land cover via Planetary Computer "
+        "— no auth, but ~12-month lag and once-per-year snapshots.\n\n"
+        "Dynamic World: Google's 10m NRT land cover via Earth Engine — updated "
+        "every 2-5 days, goes back to 2015. Requires a free Earth Engine "
+        "account (one-time `earthengine authenticate`)."
+    ),
 )
-st.session_state.before_year = before_year
-st.session_state.after_year = after_year
+st.session_state.data_source = data_source
 
-st.sidebar.caption(
-    "IO-LULC is an **annual** product (~12-month lag). "
-    "Latest year may not be published for every region."
-)
+# Clear stale results if the user switches data sources.
+if data_source != (st.session_state.get("_last_data_source") or data_source):
+    st.session_state.result = None
+st.session_state._last_data_source = data_source
 
-if before_year >= after_year:
-    st.sidebar.warning("'After year' should be later than 'before year'.")
+
+if data_source == "iolulc":
+    st.sidebar.markdown("### Years")
+    years = available_years()
+
+    # Clamp stored preferences in case they fall outside the current range.
+    if st.session_state.before_year not in years:
+        st.session_state.before_year = years[0]
+    if st.session_state.after_year not in years:
+        st.session_state.after_year = years[-1]
+
+    before_year = st.sidebar.selectbox(
+        "Before year",
+        years,
+        index=years.index(st.session_state.before_year),
+    )
+    after_year = st.sidebar.selectbox(
+        "After year",
+        years,
+        index=years.index(st.session_state.after_year),
+    )
+    st.session_state.before_year = before_year
+    st.session_state.after_year = after_year
+
+    st.sidebar.caption(
+        "IO-LULC is an **annual** product (~12-month lag). "
+        "Latest year may not be published for every region."
+    )
+
+    if before_year >= after_year:
+        st.sidebar.warning("'After year' should be later than 'before year'.")
+
+else:
+    # Dynamic World mode: two date-window pickers.
+    st.sidebar.markdown("### Date windows")
+    st.sidebar.caption(
+        "Dynamic World is updated every 2-5 days. Pick a **before** window and "
+        "an **after** window — the modal (most common) class per pixel across "
+        "each window is used. 30-60 days is a good default."
+    )
+
+    dw_before_start = st.sidebar.date_input(
+        "Before: start",
+        value=st.session_state.dw_before_start,
+        min_value=date(2015, 6, 23),   # DW coverage starts mid-2015
+        max_value=date.today(),
+        key="dw_before_start_input",
+    )
+    dw_before_end = st.sidebar.date_input(
+        "Before: end",
+        value=st.session_state.dw_before_end,
+        min_value=date(2015, 6, 23),
+        max_value=date.today(),
+        key="dw_before_end_input",
+    )
+    dw_after_start = st.sidebar.date_input(
+        "After: start",
+        value=st.session_state.dw_after_start,
+        min_value=date(2015, 6, 23),
+        max_value=date.today(),
+        key="dw_after_start_input",
+    )
+    dw_after_end = st.sidebar.date_input(
+        "After: end",
+        value=st.session_state.dw_after_end,
+        min_value=date(2015, 6, 23),
+        max_value=date.today(),
+        key="dw_after_end_input",
+    )
+
+    st.session_state.dw_before_start = dw_before_start
+    st.session_state.dw_before_end = dw_before_end
+    st.session_state.dw_after_start = dw_after_start
+    st.session_state.dw_after_end = dw_after_end
+
+    # Validation
+    if dw_before_start > dw_before_end:
+        st.sidebar.warning("'Before: start' must be on/before 'Before: end'.")
+    if dw_after_start > dw_after_end:
+        st.sidebar.warning("'After: start' must be on/before 'After: end'.")
+    if dw_before_end > dw_after_start:
+        st.sidebar.warning(
+            "The 'before' window should end before the 'after' window starts."
+        )
+
+    st.sidebar.markdown("#### Earth Engine project")
+    ee_project = st.sidebar.text_input(
+        "Google Cloud project ID",
+        value=st.session_state.ee_project,
+        placeholder="e.g. my-ee-project-123456",
+        help=(
+            "Since 2023, Earth Engine requires a Google Cloud project ID.\n\n"
+            "Get one (free) at https://console.cloud.google.com/, then enable "
+            "the Earth Engine API:\n"
+            "https://console.cloud.google.com/apis/library/earthengine.googleapis.com\n\n"
+            "Alternatives: run `earthengine set_project YOUR_ID` once in a "
+            "terminal, or export EARTHENGINE_PROJECT=YOUR_ID."
+        ),
+    )
+    st.session_state.ee_project = ee_project
+
+    # Auth status indicator
+    if st.sidebar.button("Check Earth Engine auth", width="stretch"):
+        with st.spinner("Checking Earth Engine..."):
+            ee_status = check_earth_engine_auth(project=ee_project or None)
+        if ee_status["ok"]:
+            st.sidebar.success(ee_status["message"])
+        else:
+            st.sidebar.error(
+                f"{ee_status['message']}\n\n{ee_status['how_to_fix']}"
+            )
 
 st.sidebar.markdown("### Optional overlays")
 show_rgb = st.sidebar.checkbox(
@@ -253,9 +429,9 @@ if show_fires:
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Data: Impact Observatory / Esri 10m LULC via Microsoft Planetary Computer. "
-    "Sentinel-2 L2A for RGB previews. NASA FIRMS for fires. "
-    "Basemap: Esri World Imagery."
+    "Data sources: Impact Observatory / Esri 10m LULC (Planetary Computer), "
+    "Google Dynamic World 10m NRT (Earth Engine), Sentinel-2 L2A for RGB "
+    "previews, NASA FIRMS for fires. Basemap: Esri World Imagery."
 )
 
 
@@ -459,10 +635,18 @@ else:
 
 st.markdown("### 2. Run change detection")
 
-can_run = (
-    st.session_state.bbox is not None
-    and st.session_state.before_year < st.session_state.after_year
-)
+if data_source == "iolulc":
+    can_run = (
+        st.session_state.bbox is not None
+        and st.session_state.before_year < st.session_state.after_year
+    )
+else:
+    can_run = (
+        st.session_state.bbox is not None
+        and st.session_state.dw_before_start <= st.session_state.dw_before_end
+        and st.session_state.dw_after_start <= st.session_state.dw_after_end
+        and st.session_state.dw_before_end < st.session_state.dw_after_start
+    )
 
 if st.button("▶ Analyze", type="primary", disabled=not can_run, width="stretch"):
     st.session_state.last_error = None
@@ -474,36 +658,82 @@ if st.button("▶ Analyze", type="primary", disabled=not can_run, width="stretch
     st.session_state.preview_after = None
 
     bbox = st.session_state.bbox
-    y1 = st.session_state.before_year
-    y2 = st.session_state.after_year
 
     try:
-        with st.spinner(f"Fetching {y1} land cover..."):
-            lulc_before = fetch_lulc(bbox, y1)
-            lulc_before = lulc_before.compute()
+        if data_source == "iolulc":
+            y1 = st.session_state.before_year
+            y2 = st.session_state.after_year
+            before_label: object = y1
+            after_label: object = y2
 
-        with st.spinner(f"Fetching {y2} land cover..."):
-            lulc_after = fetch_lulc(bbox, y2)
-            lulc_after = lulc_after.compute()
+            with st.spinner(f"Fetching {y1} land cover (IO-LULC)..."):
+                lulc_before = fetch_lulc(bbox, y1)
+                lulc_before = lulc_before.compute()
 
-            # Align after to before (nearest-neighbour) to be safe.
-            if lulc_after.shape != lulc_before.shape:
-                lulc_after = lulc_after.interp_like(
-                    lulc_before, method="nearest"
-                ).astype("int16")
+            with st.spinner(f"Fetching {y2} land cover (IO-LULC)..."):
+                lulc_after = fetch_lulc(bbox, y2)
+                lulc_after = lulc_after.compute()
+
+                if lulc_after.shape != lulc_before.shape:
+                    lulc_after = lulc_after.interp_like(
+                        lulc_before, method="nearest"
+                    ).astype("int16")
+
+            # For RGB preview in IO-LULC mode, use the same two years.
+            rgb_before_year, rgb_after_year = y1, y2
+
+        else:
+            # Dynamic World path.
+            b_start = st.session_state.dw_before_start
+            b_end = st.session_state.dw_before_end
+            a_start = st.session_state.dw_after_start
+            a_end = st.session_state.dw_after_end
+            before_label = dynamic_world_period_description(b_start, b_end)
+            after_label = dynamic_world_period_description(a_start, a_end)
+
+            ee_project = st.session_state.ee_project or None
+            with st.spinner(f"Fetching Dynamic World for {before_label}..."):
+                lulc_before, n_before = fetch_dynamic_world_mode(
+                    bbox, b_start, b_end, project=ee_project
+                )
+            with st.spinner(f"Fetching Dynamic World for {after_label}..."):
+                lulc_after, n_after = fetch_dynamic_world_mode(
+                    bbox, a_start, a_end, project=ee_project
+                )
+                if lulc_after.shape != lulc_before.shape:
+                    lulc_after = lulc_after.interp_like(
+                        lulc_before, method="nearest"
+                    ).astype("int16")
+
+            st.toast(
+                f"Dynamic World: {n_before} scene(s) before, "
+                f"{n_after} scene(s) after.",
+                icon="🛰️",
+            )
+
+            # For RGB preview in DW mode: use the calendar year of the
+            # midpoint of each window as the S2 summer composite year.
+            rgb_before_year = b_start.year + (1 if b_start.month > 9 else 0)
+            rgb_after_year = a_start.year + (1 if a_start.month > 9 else 0)
 
         with st.spinner("Computing change detection..."):
-            result = compute_change(lulc_before, lulc_after, y1, y2)
+            result = compute_change(
+                lulc_before, lulc_after, before_label, after_label
+            )
             st.session_state.result = result
 
         if show_rgb:
             try:
-                with st.spinner(f"Fetching Sentinel-2 RGB for {y1}..."):
-                    st.session_state.preview_before = fetch_s2_rgb_preview(bbox, y1)
+                with st.spinner(f"Fetching Sentinel-2 RGB for {rgb_before_year}..."):
+                    st.session_state.preview_before = fetch_s2_rgb_preview(
+                        bbox, rgb_before_year
+                    )
                     if st.session_state.preview_before is not None:
                         st.session_state.preview_before = st.session_state.preview_before.compute()
-                with st.spinner(f"Fetching Sentinel-2 RGB for {y2}..."):
-                    st.session_state.preview_after = fetch_s2_rgb_preview(bbox, y2)
+                with st.spinner(f"Fetching Sentinel-2 RGB for {rgb_after_year}..."):
+                    st.session_state.preview_after = fetch_s2_rgb_preview(
+                        bbox, rgb_after_year
+                    )
                     if st.session_state.preview_after is not None:
                         st.session_state.preview_after = st.session_state.preview_after.compute()
             except Exception as e:
@@ -638,10 +868,14 @@ if result is not None:
     with tab_report:
         report_md = format_change_report(result, aoi_name=st.session_state.aoi_name)
         st.markdown(report_md)
+        def _safe_label(s: object) -> str:
+            return re.sub(r"[^0-9A-Za-z_-]+", "_", str(s)).strip("_") or "period"
+        fname_before = _safe_label(result.before_year)
+        fname_after = _safe_label(result.after_year)
         st.download_button(
             "⬇ Download report (Markdown)",
             data=report_md.encode("utf-8"),
-            file_name=f"change_report_{result.before_year}_{result.after_year}.md",
+            file_name=f"change_report_{fname_before}_to_{fname_after}.md",
             mime="text/markdown",
         )
 
