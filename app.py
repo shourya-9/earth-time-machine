@@ -67,63 +67,44 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Google Search Console verification
 # ---------------------------------------------------------------------------
-# Injects <meta name="google-site-verification"> into the parent document's
-# <head> so Google can verify site ownership without us needing to edit the
-# Streamlit HTML template.
+# Streamlit's own index.html template is served as the raw HTML response for
+# the app's root URL. Patching that file once, on disk, puts the verification
+# meta tag in the actual HTML response — which is what Google's verifier
+# reads (it doesn't execute JS for this check, so client-side injection
+# wasn't visible to it).
 #
-# The injection has to happen inside a same-origin iframe (to reach
-# window.parent.document). Data-URL iframes have an opaque origin and can't,
-# so we need a real srcdoc iframe. The helper below prefers the newer
-# `st.iframe(srcdoc=...)` API and falls back to the deprecated
-# `st.components.v1.html` when the installed Streamlit version doesn't
-# support srcdoc yet — so the code Just Works across Streamlit versions and
-# migrates itself automatically once srcdoc support lands.
+# On Streamlit Community Cloud the container filesystem is writable, so this
+# works; on read-only deploy targets the OSError is swallowed and the tag
+# simply doesn't get injected. The edit is idempotent across reruns thanks
+# to the "tag already present" check, and is reapplied on every fresh
+# container start. No Streamlit API dependency — this survives iframe /
+# components-API changes and deprecations.
 _GSC_VERIFICATION_TOKEN = "0EWy1wwLzpXjZtFpPsxxLeB-un9_cJfUYiZylYBB3Iw"
 
 
-def _render_srcdoc_iframe(html_body: str, height: int = 0) -> None:
-    """Render same-origin HTML in an iframe, hiding deprecation noise.
+def _patch_streamlit_index_head() -> None:
+    from pathlib import Path
 
-    Order of preference:
-      1. `st.iframe(srcdoc=...)` — the future-proof API Streamlit is moving
-         toward. Not available on older versions; we catch the TypeError.
-      2. `st.components.v1.html(...)` — deprecated (removal 2026-06-01) but
-         works on every current Streamlit. By the removal date, (1) will
-         work on any Streamlit release that drops (2), so this fallback
-         becomes a no-op path.
-    """
+    tag = (
+        f'<meta name="google-site-verification" '
+        f'content="{_GSC_VERIFICATION_TOKEN}">'
+    )
     try:
-        st.iframe(srcdoc=html_body, height=height)
-        return
-    except TypeError:
-        pass
-    try:
-        import streamlit.components.v1 as _components
-        _components.html(html_body, height=height)
-    except Exception:
-        # Neither API available — silent no-op. (Should never happen in
-        # practice; both APIs have coexisted for years.)
+        index_path = Path(st.__file__).parent / "static" / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+        if tag in html:
+            return  # already patched — no-op
+        if "<head>" not in html:
+            return  # template restructured; bail rather than corrupt it
+        patched = html.replace("<head>", f"<head>\n    {tag}", 1)
+        index_path.write_text(patched, encoding="utf-8")
+    except OSError:
+        # Read-only filesystem or permission denied — silently skip. The app
+        # still runs; GSC verification just won't succeed in this environment.
         pass
 
 
-_GSC_SRCDOC = f"""<!doctype html><html><body><script>
-(function() {{
-    try {{
-        var doc = window.parent && window.parent.document;
-        if (!doc) return;
-        var n = 'google-site-verification';
-        var t = '{_GSC_VERIFICATION_TOKEN}';
-        var e = doc.head.querySelector('meta[name="' + n + '"]');
-        if (e) {{ e.setAttribute('content', t); return; }}
-        var m = doc.createElement('meta');
-        m.setAttribute('name', n);
-        m.setAttribute('content', t);
-        doc.head.appendChild(m);
-    }} catch (err) {{ /* cross-origin or detached — silent no-op */ }}
-}})();
-</script></body></html>"""
-
-_render_srcdoc_iframe(_GSC_SRCDOC, height=0)
+_patch_streamlit_index_head()
 
 
 # ---------------------------------------------------------------------------
