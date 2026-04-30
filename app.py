@@ -1265,20 +1265,32 @@ HERO_HTML = r"""
   const atmosphere = new THREE.Mesh(atmGeo, atmMat);
   globeGroup.add(atmosphere);
 
-  // --- Orbit ring ---
+  // --- Orbit frame ---
+  // Both the orbit ring and the satellite live inside this group. Since
+  // Three.js applies the same world matrix to every child, putting them
+  // in a shared tilted parent guarantees the dot stays exactly on the
+  // line at every angle. Previously the ring used Three.js's Euler tilt
+  // (composed as Rx·Ry·Rz under the default 'XYZ' order, i.e. Z applied
+  // first) while the satellite's position was hand-rolled with X applied
+  // first, so they traced slightly different ellipses — visible as a
+  // small offset between dot and line at the front of the orbit.
+  const orbitFrame = new THREE.Group();
+  orbitFrame.rotation.x = Math.PI / 2 - 0.45;
+  orbitFrame.rotation.z = 0.25;
+  globeGroup.add(orbitFrame);
+
+  // --- Orbit ring (flat circle in XZ; tilt comes from orbitFrame) ---
   const orbitRadius = 2.5;
   const orbitCurve = new THREE.EllipseCurve(0, 0, orbitRadius, orbitRadius, 0, 2 * Math.PI, false, 0);
   const orbitPoints = orbitCurve.getPoints(128).map(p => new THREE.Vector3(p.x, 0, p.y));
   const orbitGeo = new THREE.BufferGeometry().setFromPoints(orbitPoints);
   const orbitMat = new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.4 });
   const orbitLine = new THREE.Line(orbitGeo, orbitMat);
-  orbitLine.rotation.x = Math.PI / 2 - 0.45;
-  orbitLine.rotation.z = 0.25;
-  globeGroup.add(orbitLine);
+  orbitFrame.add(orbitLine);
 
   // --- Satellite (glowing point with trailing "signal" tail) ---
   const satGroup = new THREE.Group();
-  globeGroup.add(satGroup);
+  orbitFrame.add(satGroup);
 
   const satGeo = new THREE.SphereGeometry(0.07, 12, 12);
   const satMat = new THREE.MeshBasicMaterial({ color: 0x34d399 });
@@ -1327,26 +1339,13 @@ HERO_HTML = r"""
       stars3.rotation.y += 0.0006;
       stars1.rotation.x += 0.0001;
 
-      // Satellite orbits in tilted plane.
+      // Satellite position: a flat circle in orbitFrame's local XZ plane.
+      // The tilt is handled by orbitFrame's rotation, so we don't apply
+      // any tilt math here — Three.js composes the parent matrices for us
+      // and the dot lands exactly on the orbit line at every angle.
       const a = t * 0.7;
-      const r = orbitRadius;
-      const tiltX = Math.PI / 2 - 0.45;
-      const tiltZ = 0.25;
-      // Position on flat orbit
-      let px = r * Math.cos(a), py = 0, pz = r * Math.sin(a);
-      // Apply orbit tilt. Three.js default Euler order is XYZ, meaning the
-      // composed rotation acts as Rz · Ry · Rx · v — so we apply X first,
-      // then Z, to match the orbit-line mesh's `rotation.x` then `rotation.z`.
-      // Rotation X
-      let x1 = px;
-      let y1 = py * Math.cos(tiltX) - pz * Math.sin(tiltX);
-      let z1 = py * Math.sin(tiltX) + pz * Math.cos(tiltX);
-      // Rotation Z
-      let x2 = x1 * Math.cos(tiltZ) - y1 * Math.sin(tiltZ);
-      let y2 = x1 * Math.sin(tiltZ) + y1 * Math.cos(tiltZ);
-      let z2 = z1;
-      satGroup.position.set(x2, y2, z2);
-      // Point cone toward the globe center.
+      satGroup.position.set(orbitRadius * Math.cos(a), 0, orbitRadius * Math.sin(a));
+      // Point cone toward the globe center (world coords).
       satGroup.lookAt(globeGroup.position);
       satGroup.rotateX(Math.PI / 2);
 
