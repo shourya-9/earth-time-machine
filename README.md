@@ -1,196 +1,137 @@
 # 🌎 Earth Time Machine
 
-**🚀 Live app: [earth-time-machine.streamlit.app](https://earth-time-machine.streamlit.app)**
+**Interactive geospatial change detection from satellite-derived land-cover data.**
 
-Detect land-cover change anywhere on Earth between any two dates, using 10 m
-Sentinel-derived land cover maps. Built as a reproducible pipeline plus a live
-Streamlit UI where the user searches or draws any region on a world map, picks
-a date range, and gets back a change map, statistics, and an auto-generated
-report.
+Search or draw any region on Earth, choose two time periods, and Earth Time Machine retrieves land-cover data, detects pixel-level transitions, calculates area statistics, and generates interactive maps and a downloadable report.
 
-**No training required.** The pipeline orchestrates two pre-trained global
-land-cover products:
-
-- **Impact Observatory / Esri 10 m Annual LULC** (via Microsoft Planetary
-  Computer) — yearly composites, 2017–2023, stable reference data.
-- **Google Dynamic World** (via Earth Engine) — new composite every 2–5 days,
-  2015–present, for near-real-time change detection.
-
-The change-detection, UI, and visualization layers sit on top.
+[**Open the live app**](https://earth-time-machine.streamlit.app) · [**View the repository**](https://github.com/shourya-9/earth-time-machine)
 
 ---
 
-## What it does
+## Overview
 
-1. **Data sources** (pick either in the sidebar):
-   - **IO-LULC** — 10 m annual land cover from the `io-lulc-annual-v02`
-     collection on Microsoft Planetary Computer. 9 classes (Water, Trees,
-     Crops, Built Area, Bare Ground, Rangeland, …), global, 2017–2023.
-   - **Dynamic World** — 10 m Sentinel-2-derived land cover via Google
-     Earth Engine. Updated every 2–5 days, 2015–present. Modal (most-common)
-     class per pixel is computed across a user-chosen "before" and "after"
-     date window, then remapped onto the IO-LULC 9-class legend for
-     consistency.
-2. **AOI picker**: place search (OpenStreetMap) + draw rectangle on a world
-   map, or choose one of the built-in preset case studies.
-3. **Change detection**: pixel-wise class comparison, transition matrix,
-   per-class area change, notable-transition summaries (forest loss, urban
-   sprawl, agricultural expansion, etc.).
-4. **Context**:
-   - Optional Sentinel-2 L2A RGB previews (median cloud-free composites).
-   - Optional NASA FIRMS active-fire detections overlaid for the analysis period.
-5. **Outputs**: maps, transition bar-charts, a markdown report, and an
-   interactive Streamlit web app.
+Earth Time Machine is a Python geospatial analysis pipeline with a Streamlit interface for exploring how land cover changes over time.
 
-## Featured case studies (ship with the app as presets)
+It combines two global 10 m land-cover products:
 
-| Preset | Period | Expected pattern |
-|-------|--------|-------------------|
-| Rondônia deforestation (Brazil) | 2018 → 2023 | Forest → Cropland / Rangeland |
-| Dubai urban growth | 2017 → 2023 | Bare / Water → Built Area |
-| Bengaluru sprawl (India) | 2017 → 2023 | Crops / Rangeland → Built Area |
-| California Camp Fire area | 2018 → 2022 | Forest → Bare Ground / Rangeland |
-| Borneo peatland (Indonesia) | 2017 → 2023 | Forest / Flooded Veg → Crops |
+| Source | Access | Time coverage in the app | Best for |
+|---|---|---|---|
+| **Impact Observatory / Esri Annual LULC** | Microsoft Planetary Computer | 2017–2024 | Stable year-to-year comparisons |
+| **Google Dynamic World** | Google Earth Engine | 2015–present | Recent and shorter-window comparisons |
+
+The core annual workflow uses Microsoft Planetary Computer and does **not require an API key**. Dynamic World and NASA FIRMS are optional integrations.
+
+## Features
+
+- **Global area-of-interest selection** — search for a place, draw a rectangle on the map, or load a preset case study.
+- **Two land-cover backends** — annual IO/Esri LULC and near-real-time Google Dynamic World.
+- **Pixel-level change detection** — compares aligned land-cover rasters and identifies class transitions.
+- **Transition analysis** — calculates changed area, per-class totals, transition matrices, and the largest land-cover changes.
+- **Notable-change summaries** — surfaces transitions associated with deforestation, urban growth, agricultural expansion, land reclamation, and clearing.
+- **Satellite context** — optional Sentinel-2 RGB previews for the selected area.
+- **Fire context** — optional NASA FIRMS active-fire detections for the analysis period.
+- **Interactive outputs** — before/after maps, change maps, statistics, transition charts, and a downloadable Markdown report.
+- **Multiple interfaces** — Streamlit app, command-line workflow, and Jupyter notebook example.
 
 ---
 
-## Quick start
+## Architecture
 
-```bash
-# 1. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+```mermaid
+flowchart LR
+    A["AOI + time period"] --> B{"Land-cover source"}
 
-# 2. Install dependencies
-pip install -r requirements.txt
+    B --> C["IO / Esri Annual LULC<br/>Microsoft Planetary Computer"]
+    B --> D["Google Dynamic World<br/>Earth Engine"]
 
-# 3. Run the Streamlit app
-streamlit run app.py
+    C --> E["Raster normalization<br/>and grid alignment"]
+    D --> E
+
+    E --> F["Pixel-wise<br/>change detection"]
+    F --> G["Transition matrix<br/>+ area statistics"]
+
+    H["Sentinel-2 RGB<br/>(optional)"] --> J["Context layers"]
+    I["NASA FIRMS fires<br/>(optional)"] --> J
+
+    G --> K["Interactive maps<br/>charts + report"]
+    J --> K
 ```
 
-Open http://localhost:8501 in your browser.
+### Change-detection pipeline
 
-### Command-line (no UI)
+For two land-cover rasters covering the same area:
 
-Run a single case study end-to-end and write PNGs + a markdown report to
-`outputs/amazon/`:
+1. Load and normalize the source rasters.
+2. Align them to a common grid when necessary.
+3. Compare the before/after land-cover class at each valid pixel.
+4. Count each `from → to` class transition.
+5. Convert pixel counts into approximate area values.
+6. Aggregate the results into class totals, top transitions, notable transitions, maps, charts, and a report.
 
-```bash
-python examples/amazon_case_study.py
-```
-
-Or run on any custom bounding box:
-
-```bash
-python examples/cli.py \
-    --bbox -63.2,-10.7,-62.5,-10.1 \
-    --before 2018 --after 2023 \
-    --name "Rondônia" \
-    --out outputs/rondonia
-```
-
-### Notebook walkthrough
-
-```bash
-jupyter notebook notebooks/demo.ipynb
-```
+The application uses a shared 9-class legend so IO-LULC and Dynamic World results can pass through the same downstream analysis and visualization pipeline. Dynamic World's grass and shrub/scrub classes are mapped to **Rangeland** for compatibility.
 
 ---
 
-## Optional: fire overlay (NASA FIRMS)
+## Example analyses
 
-Enable "Fetch NASA FIRMS fire detections" in the sidebar.
+The app includes preset regions so the full workflow can be tested immediately.
 
-You'll need a free FIRMS MAP_KEY (takes ~30 seconds):
+| Preset | Period | Analysis focus |
+|---|---|---|
+| Rondônia, Brazil | 2018 → 2023 | Deforestation and land conversion |
+| Dubai, UAE | 2017 → 2023 | Urban expansion and reclamation |
+| Bengaluru, India | 2017 → 2023 | Urban sprawl |
+| Camp Fire area, California | 2018 → 2022 | Post-fire land-cover change |
+| Borneo, Indonesia | 2017 → 2023 | Forest and peatland conversion |
 
-1. Go to https://firms.modaps.eosdis.nasa.gov/api/area/
-2. Request a MAP_KEY with your email
-3. Export it:
-
-   ```bash
-   export FIRMS_MAP_KEY="your-key-here"
-   ```
-
-Then re-run the Streamlit app. The "🔥 Fires" tab will show fire detections
-within the AOI for the analysis period. Useful for attributing detected
-forest losses to specific fire events.
+You can also search for a location or draw any custom bounding box directly in the app.
 
 ---
 
-## Optional: Dynamic World (near-real-time land cover)
+## Tech stack
 
-The app supports Google Dynamic World as a second data source, giving
-~weekly-resolution land cover from 2017 to today (vs. IO-LULC's yearly
-product with a ~12-month publish lag).
+**Application**
+- Python
+- Streamlit
+- Folium / streamlit-folium
 
-Access requires a free Google Cloud project with the Earth Engine API
-enabled, and a Noncommercial / Community registration on Earth Engine.
-Set the project ID in the sidebar (or export `EARTHENGINE_PROJECT`).
-For headless / CI / deployed use, set `GOOGLE_APPLICATION_CREDENTIALS`
-to a GCP service-account JSON key (the service account needs the
-`Earth Engine Resource Viewer` and `Service Usage Consumer` IAM roles).
+**Geospatial processing**
+- xarray / rioxarray
+- Rasterio
+- GeoPandas
+- Shapely
+- NumPy / Pandas
 
----
+**Data access**
+- Microsoft Planetary Computer
+- STAC / `pystac-client`
+- `odc-stac`
+- Google Earth Engine
+- NASA FIRMS
 
-## Deploy to Streamlit Community Cloud (free)
-
-1. Push the repo to GitHub (the `.gitignore` already blocks service-account
-   JSONs and `.streamlit/secrets.toml` — double-check with
-   `git status` before committing).
-2. Go to https://share.streamlit.io → **New app** → select your repo,
-   branch, and `app.py`.
-3. Under **Advanced settings → Secrets**, paste the contents of
-   `.streamlit/secrets.toml.example` with real values filled in:
-   - `EARTHENGINE_PROJECT` — your GCP project ID
-   - `FIRMS_MAP_KEY` — NASA FIRMS API key (optional; only needed for fires)
-   - `[GCP_SERVICE_ACCOUNT_JSON]` — paste every field from your
-     service-account JSON file. Keep the literal `\n` inside
-     `private_key` as-is.
-4. Click Deploy. First build takes 2–4 minutes.
-
-On boot, `app.py` loads those secrets and writes the service-account JSON
-to a tempfile, so the rest of the code behaves identically to running
-locally with `export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`.
+**Visualization**
+- Matplotlib
+- Plotly
+- Folium
 
 ---
 
-## Project structure
+## Data sources
 
-```
-earth-time-machine/
-├── app.py                        # Streamlit app (entry point)
-├── requirements.txt
-├── packages.txt                  # apt deps for Streamlit Cloud (empty by default)
-├── README.md
-├── .streamlit/
-│   └── secrets.toml.example      # Template for deploy-time secrets
-├── src/
-│   ├── __init__.py
-│   ├── data.py                   # Planetary Computer queries (LULC + Sentinel-2)
-│   ├── change_detection.py       # Core change-detection logic
-│   ├── dynamic_world.py          # Google Dynamic World via Earth Engine
-│   ├── overlays.py               # NASA FIRMS fire data
-│   └── viz.py                    # Plotting + folium overlays
-├── examples/
-│   ├── amazon_case_study.py      # Featured Rondônia case study
-│   └── cli.py                    # Generic CLI over any bbox + year pair
-└── notebooks/
-    └── demo.ipynb                # Step-by-step walkthrough
-```
+### Impact Observatory / Esri Annual LULC
 
----
+The primary annual workflow uses the `io-lulc-annual-v02` collection hosted by Microsoft Planetary Computer.
 
-## How it works, in more detail
+- 10 m global land-cover product
+- Sentinel-2-derived
+- 9-class legend
+- The application currently exposes **2017–2024**
+- Anonymous Planetary Computer access — no API key required
 
-### Land cover source
-
-Impact Observatory's IO-LULC is a 10 m, 9-class global land-cover map produced
-annually from Sentinel-2 imagery via a deep-learning classifier. It's the
-output of a trained model, just not one we trained. Each pixel carries an
-integer class code:
+Classes used by the application:
 
 | Code | Class |
-|-----:|-------|
+|---:|---|
 | 1 | Water |
 | 2 | Trees |
 | 4 | Flooded Vegetation |
@@ -201,87 +142,203 @@ integer class code:
 | 10 | Clouds |
 | 11 | Rangeland |
 
-### Change detection
+### Google Dynamic World
 
-Given two class maps for the same AOI at years `y1 < y2`:
+Dynamic World provides 10 m land-cover classifications through Google Earth Engine. A classification is generated alongside Sentinel-2 acquisitions, allowing substantially more recent comparisons than the annual IO-LULC workflow.
 
-1. Reproject / align to a common 10 m grid (EPSG:4326, same pixel centers).
-2. Compute a pixel-wise change mask: `(before != after) & (before != 0) & (after != 0)`.
-3. Build a transition matrix by counting all `(from_class, to_class)` pairs
-   across the AOI; multiply counts by per-pixel hectares to get area values.
-4. Aggregate into:
-   - per-class totals before / after
-   - top-N largest transitions
-   - a fixed list of "notable" transitions (forest loss, urban sprawl, etc.)
-5. Highlight forest-loss transitions (`Trees → anything`) separately on the
-   change map for deforestation use cases.
+For a user-selected date window, Earth Time Machine computes the **modal land-cover class per pixel**, then maps Dynamic World's classes onto the shared IO-LULC legend used by the rest of the pipeline.
 
-Per-pixel area is computed using the mid-latitude approximation in EPSG:4326
-(`dlat_m = dlat * 111,320`, `dlon_m = dlon * 111,320 * cos(lat)`), which is
-accurate to < 0.3% for AOIs < ~5° of latitude.
+Dynamic World requires a Google Cloud project with Earth Engine access.
 
-### Why not a custom-trained model?
+### Sentinel-2 RGB
 
-Three reasons — the same reasons this is a nice resume project:
+Optional Sentinel-2 L2A imagery is fetched from Microsoft Planetary Computer and combined into median RGB previews to provide visual context alongside the classified land-cover maps.
 
-- **Dataset bottleneck**: high-quality labeled change-detection datasets are
-  rare and small (OSCD, LEVIR-CD are the standard ones). Operating on a
-  globally pre-computed product sidesteps this entirely.
-- **Compute bottleneck**: training on the required resolution globally costs
-  thousands of GPU-hours. Inference over a user-selected AOI is seconds.
-- **Real-world practice**: most production geospatial ML teams don't train
-  their own land-cover models either — they orchestrate pre-trained products.
+### NASA FIRMS
 
-A natural extension is to layer a geospatial foundation model (IBM / NASA
-**Prithvi**, on HuggingFace) for AOIs where the baseline IO-LULC disagrees
-with your eye — useful for a capstone upgrade.
+NASA FIRMS can optionally overlay MODIS/VIIRS active-fire detections for the selected analysis period. This is useful as contextual evidence when examining fire-related land-cover changes.
+
+---
+
+## Quick start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/shourya-9/earth-time-machine.git
+cd earth-time-machine
+```
+
+### 2. Create a virtual environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+On Windows:
+
+```powershell
+.venv\Scripts\activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run the app
+
+```bash
+streamlit run app.py
+```
+
+Then open:
+
+```text
+http://localhost:8501
+```
+
+The standard IO-LULC workflow works without additional credentials.
+
+---
+
+## Optional integrations
+
+<details>
+<summary><strong>Google Dynamic World / Earth Engine</strong></summary>
+
+Dynamic World requires a Google Cloud project with the Earth Engine API enabled and Earth Engine access configured.
+
+For local interactive use:
+
+```bash
+earthengine authenticate
+export EARTHENGINE_PROJECT="your-project-id"
+```
+
+For headless or deployed environments, set:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+export EARTHENGINE_PROJECT="your-project-id"
+```
+
+The service account must have the permissions required to access Earth Engine through the configured project.
+
+</details>
+
+<details>
+<summary><strong>NASA FIRMS fire overlay</strong></summary>
+
+Request a free FIRMS MAP_KEY from:
+
+https://firms.modaps.eosdis.nasa.gov/api/area/
+
+Then export it before starting the app:
+
+```bash
+export FIRMS_MAP_KEY="your-key-here"
+```
+
+The fire overlay will then be available in the Streamlit interface.
+
+</details>
+
+---
+
+## Other ways to run it
+
+### Command line
+
+Run the included Rondônia case study:
+
+```bash
+python examples/amazon_case_study.py
+```
+
+Or analyze any custom bounding box:
+
+```bash
+python examples/cli.py \
+    --bbox -63.2,-10.7,-62.5,-10.1 \
+    --before 2018 \
+    --after 2023 \
+    --name "Rondônia" \
+    --out outputs/rondonia
+```
+
+### Notebook
+
+```bash
+jupyter notebook notebooks/demo.ipynb
+```
+
+---
+
+## Project structure
+
+```text
+earth-time-machine/
+├── app.py
+├── requirements.txt
+├── packages.txt
+├── .streamlit/
+│   └── secrets.toml.example
+├── src/
+│   ├── data.py
+│   ├── change_detection.py
+│   ├── dynamic_world.py
+│   ├── overlays.py
+│   └── viz.py
+├── examples/
+│   ├── amazon_case_study.py
+│   └── cli.py
+└── notebooks/
+    └── demo.ipynb
+```
+
+### Core modules
+
+- `src/data.py` — Planetary Computer queries for IO-LULC and Sentinel-2.
+- `src/change_detection.py` — raster comparison, area statistics, transition analysis, and report generation.
+- `src/dynamic_world.py` — Google Dynamic World access and class remapping through Earth Engine.
+- `src/overlays.py` — NASA FIRMS fire-data integration.
+- `src/viz.py` — land-cover maps, change maps, RGB previews, and charts.
 
 ---
 
 ## Limitations
 
-- **10 m resolution**: detects changes of ≥ ~500 m² reliably; individual
-  buildings may or may not show up depending on alignment.
-- **Seasonal variation**: the IO-LULC product is annual, so intra-year changes
-  (e.g., harvested cropland mid-season) aren't captured.
-- **Coverage gaps**: a handful of cloud-locked regions may have lower-quality
-  classifications in specific years.
-- **No sub-class changes**: the 9-class scheme can't distinguish, e.g.,
-  different forest types. For finer thematic detail, use ESA WorldCover
-  (11 classes, not wired in).
-- **Nominatim rate-limit**: the in-map place search uses OpenStreetMap's
-  public Nominatim endpoint (1 req/sec). Fine for interactive use; swap for
-  Mapbox / Google if you ever re-purpose this at scale.
+- **Spatial resolution** — both primary land-cover products are nominally 10 m, so small or narrow changes may not be represented reliably.
+- **Classification uncertainty** — detected changes are changes in predicted land-cover classes, not direct ground-truth observations.
+- **Annual IO-LULC data** — the annual product is not intended for within-year change analysis.
+- **Dynamic World class remapping** — grass and shrub/scrub are combined into the shared Rangeland class, so some thematic detail is lost.
+- **Approximate area calculations** — per-pixel area is estimated from raster spacing and latitude; reported hectare values should be treated as approximate.
+- **Large AOIs** — Earth Engine download limits may require a smaller region or coarser resolution for Dynamic World analyses.
+- **Place search** — the map search uses the public OpenStreetMap Nominatim service and is intended for interactive use rather than high-volume geocoding.
 
 ---
 
-## Extensions (worth talking about in interviews)
+## Roadmap
 
-1. **Multi-temporal trajectories**. Fetch N ≥ 5 years and plot class-area
-   time-series, animated GIFs of the change map, Sankey diagrams of
-   transitions.
-2. **Causal attribution**. Already wired for FIRMS fires. Add Global Forest
-   Watch mining/palm-oil concessions, OpenStreetMap road-network diffs, rainfall
-   anomalies, etc., to explain *why* changes occurred.
-3. **Foundation-model classification**. Run NASA / IBM Prithvi on Sentinel-2
-   imagery directly for specific AOIs and compare with IO-LULC. See
-   https://huggingface.co/ibm-nasa-geospatial
-4. **Uncertainty**. Compute bootstrap-style confidence bands by running the
-   pipeline on several nearby dates and reporting the agreement.
-5. **Natural-language query**. Wrap the analyze function in a small LLM
-   prompt that parses "show me deforestation in Borneo between 2018 and 2023"
-   into `(bbox, y1, y2)`. Tiny token cost, massive demo appeal.
+Potential extensions include:
+
+- Multi-year land-cover trajectories and animated change maps.
+- Additional contextual datasets for explaining detected changes.
+- Comparison against geospatial foundation-model classifications for selected regions.
 
 ---
 
 ## Attribution
 
-- Impact Observatory / Esri LULC — © Impact Observatory, Microsoft, and Esri,
-  under CC BY 4.0. Hosted by Microsoft Planetary Computer.
-- Sentinel-2 — Copernicus data, European Union / ESA.
-- NASA FIRMS — MODIS/VIIRS active fires, public domain.
-- Base maps — OpenStreetMap contributors, © CartoDB.
+- **Impact Observatory / Esri LULC** — © Impact Observatory, Microsoft, and Esri, licensed under CC BY 4.0 and hosted by Microsoft Planetary Computer.
+- **Sentinel-2** — Copernicus data, European Union / ESA.
+- **Google Dynamic World** — accessed through Google Earth Engine.
+- **NASA FIRMS** — MODIS/VIIRS active-fire data.
+- **Base maps / geocoding** — OpenStreetMap contributors and CartoDB.
 
 ## License
 
-MIT.
+MIT
